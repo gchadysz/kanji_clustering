@@ -1,0 +1,339 @@
+---
+title: "Japanese Kanji clustering"
+author: "Grzegorz Chadysz"
+date: "13.11.2019"
+output:
+  html_document:
+    theme: spacelab
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+  toc_collapsed: yes
+toc_depth: 3
+---
+***
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This paper tackles the topic of clustering Japanese Kanji. The general idea is to see if they can be clustered in way that we can draw some conclusions about i.e. ratio of the number of meanings of a Kanji to the complexity of that Kanji. The dataset was found on <https://www.kanjidatabase.com/>. To better understand the following chapters, I reckon it is necessary to explain, at least, the basics of Japanese writing system. 
+
+Kanji are one of three main components (along with *Hiragana* and *Katakana*) of the Japanese writing system. They are of Chinese descent and were incorporated to Japanese language as soon as in fifth century. Since Kanji characters were invented in China, through the process of assimilation to Japanese language, they often started having two readings. What it means is that a Kanji character could be read in a "Japanese" (*Kun'yomi*) way or a "Sino-Japanese" (*On'yomi*) way. Of course, some characters have only one of those ways of reading, however, most have both. For example, the character 水 (meaning water) has its *Kun* reading *mizu*, while its *On* reading is *sui*. 
+
+The more complicated characters are often comprised of the more basic ones. The parts of a character, namely a brush stroke or a few, are named radicals. It is a method of looking up Kanji in a dictionary. First you find a part of a character you want to look up, then the next one, until you find a whole character you were looking for. 
+
+```{r, echo = FALSE, results='hide'}
+kanji_ugly <- read.csv("C:/Users/Grzesiek/Desktop/Data Science/Unsupervised Learning/First Paper/Kanji.csv",
+                  header = TRUE,
+                  sep = ";",
+                  encoding="UTF-8")
+kanji <- kanji_ugly[,c(2,3,4,5,8,14,15,19,20)]
+```
+***
+
+# Kanji Dataset
+
+The original dataset was downloaded from link shown in the introduction and contained 2136 observations and 68 variables. It was done using the line of code below. Usage of UTF-8 encoding was necessary to correctly display Kanji characters.
+```{r, eval=FALSE, echo=TRUE}
+kanji <- read.csv("Kanji.csv", header = TRUE, sep = ";", encoding="UTF-8")
+```
+Each observation stands for a single Kanji character, which are reffered to as "Jōyō Kanji", which means "commonly-used". All in all there are around 50 000 of them, but that amount would take a massive toll on the computing time. It wouldn't also bring much information for us, as most of them aren't even used in day-to-day Japanese. 
+
+The number of variables was reduced from 68 to 9 in order to gain readability while also getting rid of unnecesary columns such as some phonetic categorizations. Remaining columns will be shown in the following sub-chapter.
+
+## Organizing the data
+
+In order to be more time-efficent in manipulating the dataset and, later on, with clustering, we'll need to install some packages designed to speed up the upcoming calculations and processes. Below is the list of packages installed to help with this project:
+```{r, echo = TRUE, results='hide', warning=FALSE, message=FALSE}
+library(cluster)
+library(factoextra)
+library(flexclust)
+library(fpc)
+library(clustertend)
+library(ClusterR)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(gridExtra)
+library(ggplotify)
+```
+
+Next, let's slightly alter the column names to be shorter and more readable.
+```{r, results='hide'}
+kanji <- kanji %>% 
+  rename(
+    Class = Kanji.Classification,
+    On_Meanings = X..of.Meanings.of.On,
+    Kun_Meanings = X..of.Meanings.of.Kun,
+    On_Trans = Translation.of.On,
+    Kun_Trans = Translation.of.Kun,
+    Radical_Freq = Radical.Freq.
+    )
+```
+
+Also, for the purposes of future clustering, let's create a new variable which will be a sum of Japanese and Sino-Japanese readings named: total_Meanings.
+```{r, results='hide'}
+kanji$total_Meanings <- kanji %>% select(On_Meanings, Kun_Meanings) %>% rowSums(na.rm=TRUE)
+```
+
+Below are the first five rows of the dataset containing all the necessary information about the Kanji. Black dot shows lack of data, which in our case means that a Kanji does not have either *On* meaning or *Kun* meaning, therefore has no translation of said meaning.
+
+
+```{r kanji, echo = FALSE}
+kable(kanji[1:5,], caption = "Preview of the dataset") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## List of variables
+
+Although most of the column names seem pretty self-explanatory, I will explain what each of them stand for, just for clarification:
+
+- Kanji - how the Kanji looks
+- Strokes - number of brush strokes needed to write a character *properly*
+- Grade - in which grade students learn this Kanji<font size="2">^1^</font> 
+- Class - indicates in which manner a Kanji came to be
+- Radical_Freq - is the frequency of appearing radicals
+- On_Meanings - the Sino-Japanese meaning(s) of this Kanji
+- On_Trans - English translation
+- Kun_Meanings - the Japanese meaning(s) of this Kanji
+- Kun_Trans - English translation
+- Total_Meanings - sum of *On* and *Kun* readings
+
+<font size="2">^1^Note that not all Kanji are taught in school but nonetheless have an assigned grade to them which shows roughly when students should get to know this particular Kanji. </font>
+
+***
+
+# Clustering 
+
+In this chapter I will be clustering four different sets of variables with k-means and PAM clusters. Due to the fact that there may be more than one interesting way to cluster Kanji, I created four pairs of variables which interpretation can prove useful and interesting. Apart from the ratio of the number of meanings of a Kanji to the complexity of that Kanji mentioned in the indtroduction, we can potentially cluster Kanji depending on in which grade students are taught more complicated characters, or characters with more meanings. Only two variables will be clustered so that results of the clustering are easily interpretable. Each clustering calculation will use Euclidean distance as the metric. The sets are as follows:
+
+1. strokes_total - number of strokes and total number of meanings
+2. grade_strokes - grade and number of strokes
+3. grade_total - grade and total number of meanings
+4. on_kun - number of *On'yomi* and *Kun'yomi* meanings
+
+## K-means clustering {.tabset .tabset-fade .tabset-pills}
+
+Firstly, we would like to estimate the number of clusters how many clusters we should create according to the Silhouette function. Optimal number of clusters is marked with the dotted line. There are four different sets for which k-means Silhouette was calculated. Each of those sets is described by its title and aims at showing possible different dependencies.
+<br>
+```{r, echo=FALSE}
+strokes_total <- kanji[,c("Strokes", "total_Meanings")]
+grade_strokes <- kanji[,c("Grade", "Strokes")]
+grade_total <- kanji[,c("Grade", "total_Meanings")]
+on_kun <- kanji[,c("On_Meanings", "Kun_Meanings")]
+```
+```{r, echo=TRUE}
+km1s <- fviz_nbclust(strokes_total, kmeans, method = "s") + ggtitle("Strokes to total meanings")
+km2s <- fviz_nbclust(grade_strokes, kmeans, method = "s") + ggtitle("Grade to strokes")
+km3s <- fviz_nbclust(grade_total, kmeans, method = "s") + ggtitle("Grade to total meanings")
+km4s <- fviz_nbclust(on_kun, kmeans, method = "s") + ggtitle("On'yomi to Kun'yomi readings")
+
+grid.arrange(km1s, km2s, km3s, km4s, ncol=2, top = "Optimal number of clusters")
+```
+<br><br>
+As we can see, the silhouette indicates that for each pair of variables the optimal number of clusters is two. Then again, I reckon two clusters are too simplistic and provide us with somehow binary view of reality. As far as grade_strokes set is considered it could potentially mean that a Kanji character is either taught early in education process and is easy to write or is taught late and is difficult to write. My guess is that it is not so black and white and that there are some characters which oppose this narrative. Thus, I will calculate k-means for my sets for both 2 and 3 clusters, to see what the difference is (if any meaningful). 
+<br>
+
+### 2 Clusters Variant
+```{r, echo=TRUE, results='hide', include=FALSE}
+km1_2 <- eclust(strokes_total, "kmeans", hc_metric="euclidean", k=2)
+km2_2 <- eclust(grade_strokes, "kmeans", hc_metric="euclidean", k=2)
+km3_2 <- eclust(grade_total, "kmeans", hc_metric="euclidean", k=2)
+km4_2 <- eclust(on_kun, "kmeans", hc_metric="euclidean", k=2)
+```
+```{r, echo=TRUE}
+c1 <- fviz_cluster(km1_2, pointsize = 0.7, geom = "point") + ggtitle("Strokes to total meanings")
+c2 <- fviz_cluster(km2_2, pointsize = 0.7, geom = "point") + ggtitle("Grade to strokes")
+c3 <- fviz_cluster(km3_2, pointsize = 0.7, geom = "point") + ggtitle("Grade to total meanings")
+c4 <- fviz_cluster(km4_2, pointsize = 0.7, geom = "point") + ggtitle("On'yomi to Kun'yomi readings")
+
+grid.arrange(arrangeGrob(c1, c2, c3, c4, ncol=2, top = "K-means"))
+```
+
+Above we can see the groups created for k = 2, which was a suggested number taken from silhouette analysis. As a result each plot shows 2136 observations grouped into two clusters.
+
+Top left plot shows that there is generally an even number of Kanjis with few meanings for each number of strokes. It gets smaller slowly as the number of strokes increases but it's almost at the end of the graph (apart from one obvious outlier which has three meanings and takes **29** strokes to write). What's more, the blue cluster shows that more universal characters (those which have many meanings) tend to be rather less complex, as the cluster is closer to the left side of the plot.
+
+Top right plot shows something that could be anticipated beforehand, which is the increase in Kanji complexity and difficulty along with the advancement in educational process. There is a clear division between rather simple Kanjis (red cluster) and those more difficult (blue cluster). Also, we can see that at the beggining of education the blue cluster is really thin and gradually thickens moving to the right. In the penultimate grade the number drops a little, but rises sharply again in last grade.
+ 
+Bottom left plot shows that, during the 7-year education in Japan, students are being taught almost evenly as far as number of meanings of one character is considered. Red cluster shows that each year there is almost the same basis of Kanji with few meanings. What differs is the number of meaningful Kanji, which is slightly different each year.
+
+Bottom right plot shows relation between Sino-Japanese number of readings (x axis) and Japanese number of readings (y axis). The biggest concentration of observations seems to be in the bottom left part of the graph which can probably tell us that most Kanji have similar number of *Kun* and *On* readings. Red cluster contains almost all not-even distributions of readings, but it's hard to tell which method (*Kun* or *On*) is more dominant.
+
+
+***
+
+### 3 Clusters Variant
+```{r, echo=TRUE, results='hide', include=FALSE}
+km1_3 <- eclust(strokes_total, "kmeans", hc_metric="euclidean", k=3)
+km2_3 <- eclust(grade_strokes, "kmeans", hc_metric="euclidean", k=3)
+km3_3 <- eclust(grade_total, "kmeans", hc_metric="euclidean", k=3)
+km4_3 <- eclust(on_kun, "kmeans", hc_metric="euclidean", k=3)
+```
+```{r, echo=TRUE}
+cc1 <- fviz_cluster(km1_3, pointsize = 0.7, geom = "point") + ggtitle("Strokes to total meanings")
+cc2 <- fviz_cluster(km2_3, pointsize = 0.7, geom = "point") + ggtitle("Grade to strokes")
+cc3 <- fviz_cluster(km3_3, pointsize = 0.7, geom = "point") + ggtitle("Grade to total meanings")
+cc4 <- fviz_cluster(km4_3, pointsize = 0.7, geom = "point") + ggtitle("On'yomi to Kun'yomi readings")
+
+grid.arrange(arrangeGrob(cc1, cc2, cc3, cc4, ncol=2, top = "K-means"))
+```
+
+Plots above show groups created for k = 3, which was taken arbitrarly as I thought the two cluster would not be sufficent to properly differentiate groups.
+
+Top left plot had its bottom cluster split into two smaller ones while one remained identical. The bottom cluster contained Kanjis which did not have many meanings and current division shows us that inside this group there is one smaller which contains simple Kanji and other containing more complex ones.
+
+In top right plot the algorithm had combined top part of the bottom cluster and bottom part of the top one, thus creating "middle" cluster. This may probably show that there are more than two "levels" of Kanji complexity, i.e. easy (red), harder (blue), hardest (green). Possibly with the increase of number of clusters more horizontal clusters would be created, depicting more of said levels.
+ 
+Bottom left plot is similar case. A "middle" cluster was created between two others. It can also probably show the "level" aspect of examined variables.
+
+Bottom right plot had its bottom cluster flattened to the point it may contain Kanji with almost only *On* meanings. Then the green cluster is comprised of the, let's say, condensation point of many Kanji, but also is skewed a bit towards more *On* meanings. Blue cluster remained similar to when k equalled 2 but had its bottom part taken out.
+
+***
+
+## PAM clustering {.tabset .tabset-fade .tabset-pills}
+
+The same operations as in the previous sub-chapter were repeated to find the optimal number of clusters for PAM method. The only difference between the two approaches is that PAM uses actual observation as a center of cluster (medoid) whereas k-means creates artificial points for optimization.
+```{r, echo=FALSE}
+strokes_total <- kanji[,c("Strokes", "total_Meanings")]
+grade_strokes <- kanji[,c("Grade", "Strokes")]
+grade_total <- kanji[,c("Grade", "total_Meanings")]
+on_kun <- kanji[,c("On_Meanings", "Kun_Meanings")]
+```
+```{r, echo=TRUE}
+pam1s <- fviz_nbclust(strokes_total, pam, method = "s") + ggtitle("Strokes to total meanings")
+pam2s <- fviz_nbclust(grade_strokes, pam, method = "s") + ggtitle("Grade to strokes")
+pam3s <- fviz_nbclust(grade_total, pam, method = "s") + ggtitle("Grade to total meanings")
+pam4s <- fviz_nbclust(on_kun, pam, method = "s") + ggtitle("On'yomi to Kun'yomi readings")
+
+grid.arrange(pam1s, pam2s, pam3s, pam4s, ncol=2, top = "Optimal number of clusters")
+```
+<br><br>
+As we can see results are almost identical to when k-means was used. Main difference though is that according to silhoutte it is optimal for second data subset ("Grade to strokes") to have 10 clusters. As we can see on the graph, 2 clusters would also provide high silhouette width, so similarily to previous chapter, we will firstly calculate PAM with k = 2 for each set and then with k = 3 with the exception of the the one set that's k will be equal to 10.  
+<br>
+
+### 2 Clusters Variant
+```{r, echo=TRUE, results='hide', include=FALSE}
+pam1_2 <- eclust(strokes_total, "pam", hc_metric="euclidean", k=2)
+pam2_2 <- eclust(grade_strokes, "pam", hc_metric="euclidean", k=2)
+pam3_2 <- eclust(grade_total, "pam", hc_metric="euclidean", k=2)
+pam4_2 <- eclust(on_kun, "pam", hc_metric="euclidean", k=2)
+```
+```{r, echo=TRUE}
+p1 <- fviz_cluster(pam1_2, pointsize = 0.7, geom = "point") + ggtitle("Strokes to total meanings")
+p2 <- fviz_cluster(pam2_2, pointsize = 0.7, geom = "point") + ggtitle("Grade to strokes")
+p3 <- fviz_cluster(pam3_2, pointsize = 0.7, geom = "point") + ggtitle("Grade to total meanings")
+p4 <- fviz_cluster(pam4_2, pointsize = 0.7, geom = "point") + ggtitle("On'yomi to Kun'yomi readings")
+
+grid.arrange(arrangeGrob(p1, p2, p3, p4, ncol=2, top = "Partitioning around medoids"))
+```
+
+The difference between top left plot for PAM and k-means is that the bottom cluster is much more flattened and it seems it contains now only characters which have just a few meanings, even less than before.
+
+Top right plot is almost identical as for k-means so it would seem that in this particular set the choice of method was inconsequential.
+
+Bottom left plot and bottom right are in a similar situation as top left. They both had their bottom clusters flattened and reduced in size, showing that there is a difference between Kanjis with low number of meanings and the rest of them.
+
+***
+
+### More than 2 Clusters Variant
+```{r, echo=TRUE, results='hide', include=FALSE}
+pam1_3 <- eclust(strokes_total, "pam", hc_metric="euclidean", k=3)
+pam2_3 <- eclust(grade_strokes, "pam", hc_metric="euclidean", k=10)
+pam3_3 <- eclust(grade_total, "pam", hc_metric="euclidean", k=3)
+pam4_3 <- eclust(on_kun, "pam", hc_metric="euclidean", k=3)
+```
+```{r, echo=TRUE}
+pp1 <- fviz_cluster(pam1_3, pointsize = 0.7, geom = "point") + ggtitle("Strokes to total meanings")
+pp2 <- fviz_cluster(pam2_3, pointsize = 0.7, geom = "point") + ggtitle("Grade to strokes")
+pp3 <- fviz_cluster(pam3_3, pointsize = 0.7, geom = "point") + ggtitle("Grade to total meanings")
+pp4 <- fviz_cluster(pam4_3, pointsize = 0.7, geom = "point") + ggtitle("On'yomi to Kun'yomi readings")
+
+grid.arrange(arrangeGrob(pp1, pp2, pp3, pp4, ncol=2, top = "K-means"))
+```
+
+The general tendency in PAM seems to be reducing the size and flattening the smaller clusters in comparison with k-means. This is also true for these sets, where the general shape of clusters has been maintained (bar top right plot, of course) but they got significantly smaller.
+
+Top left and bottom left plots look very similarly to their k-means counterparts but with bottom clusters smaller than before. 
+
+Bottom right plot has had its bottom cluster divided into two others where one of them is barely visible and contains very few observations.
+
+Top right plot's set of variables was the one to have been assessed to have 10 clusters. It may seem unnecessary but I wanted to see why would the algorith choose so many clusters. Obviously we can see that the top cluster remained, which shows that there is a connection among the characters written with many strokes. As for the other clusters, some of them are extremely small compared to others and it does not look as if they carry significant meaning. Ten clusters was probably an overshoot, but as I said, I wanted to check what will happen if this is computed with respect to pre-clustering silhouette analysis.
+
+***
+
+# Post-diagnostics {.tabset .tabset-fade .tabset-pills}
+
+The results of clustering for either 2 or 3 (or 10) clusters were not significantly different between them, so one could argue which number of clusters was more appropriate. According to pre-diagnostics, two clusters (and 10 in one case) should be enough to make a good partition of the date. However we can also use a post-diagnostic method of chcecking which clustering gave better results, ergo, better partition. To find out we will calculate Calinski-Harabasz index $CH=\frac{BGSS(N-K)}{WGSS(K-1)}$, where:
+
+- N - number of observations
+- K - number of clusters
+- BGSS - between-group sum of squares
+- WGSS - within-group sum of squares
+
+<br>
+The bigger the value of CH index the better the partition. Shown below is a table of said idices, calculated separately for k-means and PAM methods. Moreover, the table contains also information on which number of clusters was better suited for this research and on whether this number matches pre-diagnostic forecast.
+<br><br>
+
+## CH k-means
+```{r, echo=FALSE}
+km_matrix <- matrix(nrow = 4, ncol = 4)
+colnames(km_matrix) <- c("2 clusters", "3 clusters", "Better partition", "Concurs with pre-diagnostics")
+rownames(km_matrix) <- c("Strokes to total meanings", "Grade to strokes", "Grade to total meanings", "On'yomi to Kun'yomi readings")
+```
+```{r, echo=TRUE}
+sets = list(strokes_total, grade_strokes, grade_total, on_kun)
+all_km2 = list(km1_2$cluster, km2_2$cluster, km3_2$cluster, km4_2$cluster)
+all_km3 = list(km1_3$cluster, km2_3$cluster, km3_3$cluster, km4_3$cluster)
+
+for(r in 1:4){
+    km_matrix[r,1] <- round(calinhara(sets[[r]], all_km2[[r]]), digits=2)
+    km_matrix[r,2] <- round(calinhara(sets[[r]], all_km3[[r]]), digits=2)
+    km_matrix[r,3] <- ifelse(km_matrix[r,1] > km_matrix[r,2], "2 clusters", "3 clusters")
+    km_matrix[r,4] <- ifelse(km_matrix[r,3] == "2 clusters", "Yes", "No")
+}
+```
+```{r, echo=FALSE}
+kable(km_matrix, caption = "Calinski-Harabasz index values") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+We can see that three out of four sets have its CH index values higher for 2 clusters, which would suggest that pre-diagnostic search for optimal number of clusters was mostly fruitful. Second and fourth row have their 2 cluster index values not much larger than for 3 clusters, so partitioning it the latter way would just slightly decrease the quality of partitioning, as opposed to first row where the difference is significant.
+
+***
+
+## CH PAM
+```{r, echo=FALSE}
+pam_matrix <- matrix(nrow = 4, ncol = 4)
+colnames(pam_matrix) <- c("2 clusters", "More clusters", "Better partition", "Concurs with pre-diagnostics")
+rownames(pam_matrix) <- c("Strokes to total meanings", "Grade to strokes*", "Grade to total meanings", "On'yomi to Kun'yomi readings")
+```
+```{r, echo=TRUE}
+sets = list(strokes_total, grade_strokes, grade_total, on_kun)
+all_pam2 = list(pam1_2$clustering, pam2_2$clustering, pam3_2$clustering, pam4_2$clustering)
+all_pam3 = list(pam1_3$clustering, pam2_3$clustering, pam3_3$clustering, pam4_3$clustering)
+
+for(r in 1:4){
+    pam_matrix[r,1] <- round(calinhara(sets[[r]], all_pam2[[r]]), digits=2)
+    pam_matrix[r,2] <- round(calinhara(sets[[r]], all_pam3[[r]]), digits=2)
+    pam_matrix[r,3] <- ifelse(pam_matrix[r,1] > pam_matrix[r,2], "2 clusters", ifelse(r==2, "10 clusters", "3 clusters"))
+    pam_matrix[r,4] <- ifelse(pam_matrix[r,3] == "2 clusters", "Yes", ifelse(pam_matrix[2,3] == "10 clusters", "Yes", "No"))
+}
+```
+```{r, echo=FALSE}
+kable(pam_matrix, caption = "Calinski-Harabasz index values") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+<font size="2"> &ast;case of 10 clusters instead of 3</font>
+
+Results for PAM show even better fit than those for k-means. Each of pre-diagnosed and proposed number of clusters was, in fact, the one that would be the best partition for given set. Worth noting is the fact that apart from the case with 10 clusters each k-means CH index was higher than its PAM counterpart. It is probably due to the main difference between algorithms which is, for k-means, choosing best **possible** point, and for PAM, best **exisiting** point.
+
+***
+
+# Summary
+
+This paper tackles the problem of Kanji characters clustering using both k-means and PAM methods in order to gather some valuable knowledge from Kanji clustering and whether there is any sensible way of partitioning them. Meanwhile, it also to tries to see the differences between the outputs for k-means and PAM methods for different number of clusters. Before clustering itself, pre-diagnostic in form of silhouette analysis was conducted and afterwards it was confronted with Calinski-Harabsz index, which is a post-diagnostic test used for comparing quality of partitioning of different clusters. Although the results are quite similar, one can see that adding clusters can provide some useful information i.e. considering the "levels" of clustered variables. 
